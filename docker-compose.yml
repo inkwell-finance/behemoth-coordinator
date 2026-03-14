@@ -1,0 +1,30 @@
+version: "3.9"
+
+networks:
+  coordinator-net:
+    driver: bridge
+
+services:
+  coordinator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks: [coordinator-net]
+    environment:
+      NODE_ENV: production
+      # P2P configuration
+      LIBP2P_LISTEN_ADDRESSES: "/ip4/0.0.0.0/tcp/4001"
+      # Noise injection settings (±5% mandatory)
+      NOISE_INJECTION_ENABLED: "true"
+      NOISE_INJECTION_RANGE: "0.05"
+      # False rejection rate (5% mandatory)
+      FALSE_REJECTION_RATE: "0.05"
+    ports:
+      # P2P port
+      - "4001:4001"
+      # gRPC port for trader
+      - "50051:50051"
+      # HTTP API
+      - "8080:8080"
+
