@@ -43,7 +43,7 @@ export async function createP2PBridge(config: P2PBridgeConfig): Promise<P2PBridg
 
   // Derive the libp2p Ed25519 identity from the COORDINATOR_KEYPAIR seed so
   // that the peerId is deterministically bound to the on-chain Solana public key.
-  let libp2pPrivateKey: Awaited<ReturnType<typeof generateKeyPairFromSeed>> | undefined;
+  let libp2pPrivateKey: any;
   const keypairEnv = process.env.COORDINATOR_KEYPAIR;
   if (keypairEnv) {
     try {
@@ -63,7 +63,7 @@ export async function createP2PBridge(config: P2PBridgeConfig): Promise<P2PBridg
   // Create libp2p node with full stack
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const node: any = await createLibp2p({
-    privateKey: libp2pPrivateKey,
+    privateKey: libp2pPrivateKey as any,
     addresses: {
       listen: config.listenAddresses,
     },

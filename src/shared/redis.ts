@@ -22,7 +22,7 @@ export function getRedisClient(): Redis {
     logger.warn('REDIS_PASSWORD not set in production');
   }
 
-  const config: Redis.RedisOptions = {
+  const config: any = {
     // Exponential back-off capped at 5 s
     retryStrategy: (times: number) => Math.min(times * 200, 5_000),
     lazyConnect: false,
