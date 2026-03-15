@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ProposalValidator, ProposalValidatorConfig } from '../src/gateway/proposal-validator';
-import { SlotSchema, ResearchProposal } from '@inkwell-finance/protocol';
+import { SlotSchema, ResearchProposal } from '@inkwell-finance/behemoth-protocol';
 
 describe('ProposalValidator', () => {
   let validator: ProposalValidator;

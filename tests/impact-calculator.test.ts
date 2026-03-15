@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ImpactCalculator, ImpactCalculatorConfig } from '../src/results/impact-calculator';
-import { ResearchImpact } from '@inkwell-finance/protocol';
+import { ResearchImpact } from '@inkwell-finance/behemoth-protocol';
 
 describe('ImpactCalculator', () => {
   let calculator: ImpactCalculator;

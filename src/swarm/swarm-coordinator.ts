@@ -10,7 +10,9 @@
  */
 
 import { EventEmitter } from 'events';
-import type { ResearchProposal, JobResult } from '@inkwell-finance/protocol';
+import type { ResearchProposal, JobResult } from '@inkwell-finance/behemoth-protocol';
+import logger from '../shared/logger.js';
+import { getRedisClient } from '../shared/redis.js';
 
 export interface ResearcherInfo {
   peerId: string;
@@ -49,13 +51,31 @@ const DEFAULT_CONFIG: SwarmConfig = {
 };
 
 export class SwarmCoordinator extends EventEmitter {
-  private readonly researchers = new Map<string, ResearcherInfo>();
+  private readonly researchers = new Map<string, ResearcherInfo>();   // keyed by peerId
+  private readonly pubkeyToId = new Map<string, string>();            // pubkey → peerId
   private currentCycle: SwarmCycleState | null = null;
   private cycleTimer?: ReturnType<typeof setTimeout>;
   private totalCycles = 0;
 
   constructor(private readonly config: SwarmConfig = DEFAULT_CONFIG) {
     super();
+  }
+
+  /**
+   * Load persisted cycle metadata from Redis.
+   * Call once after construction, before handling any proposals.
+   */
+  async init(): Promise<void> {
+    try {
+      const redis = getRedisClient();
+      const stored = await redis.get('swarm:cycle:current');
+      if (stored !== null) {
+        this.totalCycles = parseInt(stored, 10);
+        logger.info({ totalCycles: this.totalCycles }, 'SwarmCoordinator: resumed cycle count from Redis');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'SwarmCoordinator: failed to load cycle count from Redis, starting from 0');
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -83,7 +103,11 @@ export class SwarmCoordinator extends EventEmitter {
         reputation: 0.5,
         agentType,
       });
-      console.log(`[SwarmCoordinator] Researcher registered: ${peerId} (${agentType ?? 'unknown'})`);
+      // Maintain reverse lookup so handleResult can find by pubkey
+      if (publicKey && publicKey !== peerId) {
+        this.pubkeyToId.set(publicKey, peerId);
+      }
+      logger.info({ peerId, agentType: agentType ?? 'unknown' }, 'Researcher registered');
       this.emit('researcher-joined', { peerId, agentType });
     }
 
@@ -94,8 +118,13 @@ export class SwarmCoordinator extends EventEmitter {
    * Mark a researcher as offline (called when P2P connection drops).
    */
   removeResearcher(peerId: string): void {
-    if (this.researchers.delete(peerId)) {
-      console.log(`[SwarmCoordinator] Researcher removed: ${peerId}`);
+    const info = this.researchers.get(peerId);
+    if (info) {
+      this.researchers.delete(peerId);
+      if (info.publicKey && info.publicKey !== peerId) {
+        this.pubkeyToId.delete(info.publicKey);
+      }
+      logger.info({ peerId }, 'Researcher removed');
       this.emit('researcher-left', { peerId });
     }
   }
@@ -117,7 +146,7 @@ export class SwarmCoordinator extends EventEmitter {
   handleProposal(proposal: ResearchProposal, peerId: string): boolean {
     const researcher = this.researchers.get(peerId);
     if (!researcher) {
-      console.warn(`[SwarmCoordinator] Proposal from unknown researcher: ${peerId}`);
+      logger.warn({ peerId }, 'Proposal from unknown researcher');
       return false;
     }
 
@@ -133,19 +162,19 @@ export class SwarmCoordinator extends EventEmitter {
 
     // Check if cycle is still collecting
     if (this.currentCycle!.phase !== 'collecting') {
-      console.log(`[SwarmCoordinator] Proposal rejected - cycle in ${this.currentCycle!.phase} phase`);
+      logger.info({ phase: this.currentCycle!.phase }, 'Proposal rejected - cycle not in collecting phase');
       return false;
     }
 
     // Check capacity
     if (this.currentCycle!.proposals.size >= this.config.maxProposalsPerCycle) {
-      console.log(`[SwarmCoordinator] Proposal rejected - cycle full`);
+      logger.info('Proposal rejected - cycle full');
       return false;
     }
 
     // Store proposal
     this.currentCycle!.proposals.set(proposal.proposalId, proposal);
-    console.log(`[SwarmCoordinator] Proposal ${proposal.proposalId} accepted from ${peerId}`);
+    logger.info({ proposalId: proposal.proposalId, peerId }, 'Proposal accepted into cycle');
     this.emit('proposal-received', { proposal, peerId, cycleId: this.currentCycle!.cycleId });
 
     return true;
@@ -159,10 +188,12 @@ export class SwarmCoordinator extends EventEmitter {
 
     this.currentCycle.results.set(proposalId, result);
 
-    // Update researcher reputation
+    // Update researcher reputation — proposals store a pubkey, but researchers map
+    // is keyed by peerId.  Use the reverse pubkeyToId lookup to find the entry.
     const proposal = this.currentCycle.proposals.get(proposalId);
     if (proposal) {
-      const researcher = this.researchers.get(proposal.researcher);
+      const researcherPeerId = this.pubkeyToId.get(proposal.researcher ?? '') ?? proposal.researcher;
+      const researcher = this.researchers.get(researcherPeerId ?? '');
       if (researcher) {
         if (accepted) {
           researcher.acceptedProposals++;
@@ -207,7 +238,7 @@ export class SwarmCoordinator extends EventEmitter {
       this.cycleTimer = undefined;
     }
 
-    console.log(`[SwarmCoordinator] Cycle ${this.currentCycle.cycleId} entering evaluation phase (${this.currentCycle.proposals.size} proposals)`);
+    logger.info({ cycleId: this.currentCycle.cycleId, proposalCount: this.currentCycle.proposals.size }, 'Cycle entering evaluation phase');
     this.emit('cycle-evaluating', {
       cycleId: this.currentCycle.cycleId,
       proposalCount: this.currentCycle.proposals.size,
@@ -223,6 +254,11 @@ export class SwarmCoordinator extends EventEmitter {
     this.currentCycle.phase = 'complete';
     this.totalCycles++;
 
+    // Persist updated cycle count to Redis (fire-and-forget; log on error)
+    getRedisClient().set('swarm:cycle:current', String(this.totalCycles)).catch((err: Error) => {
+      logger.warn({ err }, 'SwarmCoordinator: failed to persist cycle count to Redis');
+    });
+
     const stats = {
       cycleId: this.currentCycle.cycleId,
       proposalsReceived: this.currentCycle.proposals.size,
@@ -230,7 +266,7 @@ export class SwarmCoordinator extends EventEmitter {
       duration: Date.now() - this.currentCycle.startedAt,
     };
 
-    console.log(`[SwarmCoordinator] Cycle ${this.currentCycle.cycleId} complete`, stats);
+    logger.info(stats, 'Cycle complete');
     this.emit('cycle-complete', stats);
 
     // Reset per-cycle counters
@@ -239,6 +275,14 @@ export class SwarmCoordinator extends EventEmitter {
     }
 
     this.currentCycle = null;
+  }
+
+  /**
+   * Look up the researcher pubkey for a given proposal.
+   * Returns null if the proposal is not found in the current cycle.
+   */
+  getProposalResearcher(proposalId: string): string | null {
+    return this.currentCycle?.proposals.get(proposalId)?.researcher ?? null;
   }
 
   /**
@@ -278,7 +322,7 @@ export class SwarmCoordinator extends EventEmitter {
       this.endCollectionPhase();
     }, this.config.cycleTimeoutMs);
 
-    console.log(`[SwarmCoordinator] New cycle started: ${cycleId}`);
+    logger.info({ cycleId }, 'New swarm cycle started');
     this.emit('cycle-started', { cycleId });
 
     return cycleId;

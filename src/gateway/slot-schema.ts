@@ -3,7 +3,7 @@
  * This is PUBLIC knowledge.
  */
 
-import { SlotSchema, SlotDefinition } from '@inkwell-finance/protocol';
+import { SlotSchema, SlotDefinition } from '@inkwell-finance/behemoth-protocol';
 
 /**
  * Current public slot schema.

@@ -2,7 +2,7 @@
  * Calculates research impact for reward distribution.
  */
 
-import { ResearchImpact, EpochSummary } from '@inkwell-finance/protocol';
+import { ResearchImpact, EpochSummary } from '@inkwell-finance/behemoth-protocol';
 
 export interface ImpactCalculatorConfig {
   maxSingleImpact: number;  // Cap on single proposal impact (e.g., 0.1 = 10%)

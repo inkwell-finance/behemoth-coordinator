@@ -6,9 +6,9 @@
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import { resolve, dirname } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { BacktestRequest, BacktestResponse, PaperShadowRequest, PaperShadowResponse } from '@inkwell-finance/protocol';
+import { BacktestRequest, BacktestResponse, PaperShadowRequest, PaperShadowResponse } from '@inkwell-finance/behemoth-protocol';
 
 // ESM-compatible __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -51,7 +51,7 @@ export interface TraderClient {
   /**
    * Run a backtest for a proposal.
    */
-  runBacktest(request: BacktestRequest): Promise<BacktestResponse>;
+  runBacktest(request: BacktestRequest, traceId?: string): Promise<BacktestResponse>;
 
   /**
    * Start paper trading for a proposal.
@@ -91,6 +91,34 @@ export interface HealthCheckResponse {
 }
 
 /**
+ * Build gRPC channel credentials from environment variables.
+ *
+ * Priority:
+ *   1. mTLS — when GRPC_CA_CERT, GRPC_CLIENT_KEY, and GRPC_CLIENT_CERT are all set.
+ *   2. Insecure — when GRPC_INSECURE=true (dev only).
+ *   3. Error — neither condition met; prevents accidental plain-text in production.
+ */
+function createClientCredentials(): grpc.ChannelCredentials {
+  const caPath = process.env.GRPC_CA_CERT;
+  const keyPath = process.env.GRPC_CLIENT_KEY;
+  const certPath = process.env.GRPC_CLIENT_CERT;
+
+  if (caPath && keyPath && certPath) {
+    return grpc.credentials.createSsl(
+      readFileSync(caPath),
+      readFileSync(keyPath),
+      readFileSync(certPath),
+    );
+  }
+
+  if (process.env.GRPC_INSECURE === 'true') {
+    return grpc.credentials.createInsecure();
+  }
+
+  throw new Error('gRPC TLS certs not configured. Set GRPC_CA_CERT, GRPC_CLIENT_KEY, GRPC_CLIENT_CERT or GRPC_INSECURE=true for dev.');
+}
+
+/**
  * Create a trader client using gRPC.
  */
 export function createTraderClient(config: TraderClientConfig): TraderClient {
@@ -105,15 +133,8 @@ export function createTraderClient(config: TraderClientConfig): TraderClient {
 
   const traderProto = grpc.loadPackageDefinition(packageDefinition) as any;
 
-  // Create credentials (insecure for dev, mTLS for production)
-  const credentials = config.tlsCertPath && config.tlsKeyPath && config.tlsCaPath
-    ? grpc.credentials.createSsl(
-        // Would read cert files here in production
-        Buffer.from(''),
-        Buffer.from(''),
-        Buffer.from(''),
-      )
-    : grpc.credentials.createInsecure();
+  // Credentials resolved from environment (mTLS in production, insecure in dev)
+  const credentials = createClientCredentials();
 
   // Create gRPC client
   const client = new traderProto.behemoth.trader.TraderService(
@@ -122,11 +143,13 @@ export function createTraderClient(config: TraderClientConfig): TraderClient {
   );
 
   // Helper to promisify gRPC calls
-  function promisify<TReq, TRes>(method: string): (req: TReq) => Promise<TRes> {
+  function promisify<TReq, TRes>(method: string, metadata?: grpc.Metadata): (req: TReq) => Promise<TRes> {
     return (request: TReq): Promise<TRes> => {
       return new Promise((resolve, reject) => {
         const deadline = new Date(Date.now() + config.timeoutMs);
-        client[method](request, { deadline }, (err: grpc.ServiceError | null, response: TRes) => {
+        const meta = metadata ?? new grpc.Metadata();
+        meta.set('deadline', deadline.toISOString());
+        client[method](request, meta, { deadline }, (err: grpc.ServiceError | null, response: TRes) => {
           if (err) {
             reject(err);
           } else {
@@ -138,7 +161,7 @@ export function createTraderClient(config: TraderClientConfig): TraderClient {
   }
 
   return {
-    async runBacktest(request: BacktestRequest): Promise<BacktestResponse> {
+    async runBacktest(request: BacktestRequest, traceId?: string): Promise<BacktestResponse> {
       const grpcRequest = {
         proposalId: request.proposalId,
         modifications: request.modifications.map(m => ({
@@ -149,7 +172,11 @@ export function createTraderClient(config: TraderClientConfig): TraderClient {
         dataRange: request.dataRange,
       };
 
-      const response = await promisify<any, any>('runBacktest')(grpcRequest);
+      const metadata = new grpc.Metadata();
+      if (traceId) {
+        metadata.set('x-trace-id', traceId);
+      }
+      const response = await promisify<any, any>('runBacktest', metadata)(grpcRequest);
 
       return {
         success: response.success,

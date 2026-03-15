@@ -3,7 +3,8 @@
  * Handles libp2p communication.
  */
 
-import { ResearchProposal, JobAssignment, JobResult } from '@inkwell-finance/protocol';
+import { ResearchProposal, JobAssignment, JobResult } from '@inkwell-finance/behemoth-protocol';
+import logger from '../shared/logger.js';
 
 // Topics for P2P communication
 export const P2P_TOPICS = {
@@ -62,7 +63,7 @@ export class CoordinatorP2PHandler {
   constructor(
     private bridge: P2PBridge,
     private onProposal: (proposal: ResearchProposal, peerId: string) => Promise<void>,
-    private onJobResult: (result: JobResult, peerId: string) => Promise<void>,
+    private onJobResult: (result: JobResult, peerId: string, traceId?: string) => Promise<void>,
   ) {}
 
   /**
@@ -75,17 +76,23 @@ export class CoordinatorP2PHandler {
         const proposal = msg as ResearchProposal;
         await this.onProposal(proposal, peerId);
       } catch (e) {
-        console.error('Error handling proposal:', e);
+        logger.error({ err: e }, 'Error handling proposal');
       }
     });
 
     // Listen for job results
     this.bridge.subscribe(P2P_TOPICS.RESULTS, async (msg, peerId) => {
       try {
-        const result = msg as JobResult;
-        await this.onJobResult(result, peerId);
+        // Extract the job_result envelope which may carry a traceId
+        const envelope = msg as { type?: string; result?: JobResult; traceId?: string };
+        if (envelope.type === 'job_result' && envelope.result) {
+          await this.onJobResult(envelope.result, peerId, envelope.traceId);
+        } else {
+          // Fallback: treat the whole message as a JobResult (backwards compat)
+          await this.onJobResult(msg as JobResult, peerId);
+        }
       } catch (e) {
-        console.error('Error handling result:', e);
+        logger.error({ err: e }, 'Error handling result');
       }
     });
   }
@@ -93,11 +100,12 @@ export class CoordinatorP2PHandler {
   /**
    * Broadcast job assignments.
    */
-  async broadcastJobAssignments(assignments: JobAssignment[]): Promise<void> {
+  async broadcastJobAssignments(assignments: JobAssignment[], traceId?: string): Promise<void> {
     // Broadcast all assignments
     await this.bridge.publish(P2P_TOPICS.JOBS, {
       type: 'job_assignments',
       assignments,
+      traceId,
       timestamp: Date.now(),
     });
 
@@ -107,9 +115,10 @@ export class CoordinatorP2PHandler {
         await this.bridge.sendDirect(assignment.nodeId, {
           type: 'job_assigned',
           assignment,
+          traceId,
         });
       } catch (e) {
-        console.error(`Failed to send direct assignment to ${assignment.nodeId}:`, e);
+        logger.error({ err: e, nodeId: assignment.nodeId }, 'Failed to send direct assignment');
       }
     }
   }
@@ -117,10 +126,11 @@ export class CoordinatorP2PHandler {
   /**
    * Broadcast proposal result.
    */
-  async broadcastProposalResult(result: unknown): Promise<void> {
+  async broadcastProposalResult(result: unknown, traceId?: string): Promise<void> {
     await this.bridge.publish(P2P_TOPICS.RESULTS, {
       type: 'proposal_result',
       result,
+      traceId,
       timestamp: Date.now(),
     });
   }

@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { JobDistributor, JobDistributorConfig } from '../src/jobs/distributor';
-import { ComputeNode } from '@inkwell-finance/protocol';
+import { ComputeNode } from '@inkwell-finance/behemoth-protocol';
 
 describe('JobDistributor', () => {
   let distributor: JobDistributor;
